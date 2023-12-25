@@ -2,10 +2,10 @@ import sqlite3
 import sys
 import threading
 
-from ai import get_ai_move, board_2_rep
+from new_ai import get_ai_move, model
 import datetime
 import chess
-import keras
+import torch
 import numpy as np
 from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QPainter, QColor, QCursor
@@ -357,18 +357,12 @@ class NewGame(QWidget, UiFormBasicInterface):
         self.last_figure = None
         self.unshow = 0
         self.pause_game_for_bot = 0
+        self.flag_mouse = 0
         self.initUI()
         if self.bot:
-            self.model = keras.models.load_model('models/keras_model_cpu')
-        if self.bot and self.game.turn:
-            self.pause_game_for_bot = 1
-            self.btn_undo.setEnabled(False)
-            map_thread = threading.Thread(target=self.set_pix_maps)
-            map_thread.start()
-            bot_thread = threading.Thread(target=self.bot_move)
-            bot_thread.start()
-
-
+            self.model = model
+            self.model.load_state_dict(torch.load("last_model.pth"))
+            self.model.eval()
 
     def initUI(self):
         self.setupUi(self)
@@ -392,10 +386,7 @@ class NewGame(QWidget, UiFormBasicInterface):
                 cell.mouseReleaseEvent = lambda event: self.mouse_release(event)
                 cell.setFixedSize(80, 80)
                 self.grid.addWidget(cell, 7 - i, j)
-                if i % 2 == j % 2:
-                    cell.setStyleSheet('background-color: rgb(150, 148, 148);')
-                else:
-                    cell.setStyleSheet('background-color: rgb(217, 217, 217);')
+                cell.setStyleSheet(f'background-image: url(board_cells/{7 - i}{j});')
         self.pause_label.raise_()
         self.finish_screen.hide()
         self.finish_screen.raise_()
@@ -423,13 +414,18 @@ class NewGame(QWidget, UiFormBasicInterface):
 
     def mouse_click(self, event, cell):
         if event.button() == QtCore.Qt.LeftButton and not self.game_finished:
+            widget_under_cursor = QApplication.instance().widgetAt(QCursor.pos())
+            row, col = self.find_indexs_of_widget(widget_under_cursor)
+            row = 7 - row # преобразуем в соответсвии с доской
+            self.flag_mouse = 1
             if self.pause_label.isVisible():
                 self.pause_label.hide()
-            if cell.label.pixmap():
+            if self.last_figure and self.game.color_at(row * 8 + col) != self.game.turn:
+                self.mouse_release(event)
+            elif cell.label.pixmap():
+                self.unshow_movements()
                 self.last_figure = cell
-                widget_under_cursor = QApplication.instance().widgetAt(QCursor.pos())
-                self.row, self.col = self.find_indexs_of_widget(widget_under_cursor)
-                self.row = 7 - self.row  # преобразуем в соответсвии с доской
+                self.row, self.col = row, col
                 self.show_movements()
 
     def find_indexs_of_widget(self, widget):
@@ -448,12 +444,10 @@ class NewGame(QWidget, UiFormBasicInterface):
             self.lbl.show()
 
     def mouse_release(self, event):
-        if self.unshow:
-            self.unshow_movements()
-            self.unshow = 0
         if event.button() == QtCore.Qt.LeftButton and not self.game_finished and not self.pause_game_for_bot:
             """hides the image of moving figure and checks all requests for releasing figure"""
             self.lbl.hide()
+            self.flag_mouse = 0
             widget_under_cursor = QApplication.instance().widgetAt(QCursor.pos())
             if self.row is not None and self.col is not None and self.game.piece_at(self.row * 8 + self.col):
                 row1, col1 = self.find_indexs_of_widget(widget_under_cursor)
@@ -464,37 +458,39 @@ class NewGame(QWidget, UiFormBasicInterface):
                         self.make_move(self.move)
                         self.amount_of_actions += 1
                         self.change_label_color()
-            self.row, self.col = None, None
+                        self.last_figure = None
+                        self.row, self.col = None, None
+                        self.unshow_movements()
 
     def make_move(self, move):
         flag = True
         row, row1 = int(move[1]) - 1, int(move[3]) - 1
         col, col1 = self.letters.index(move[0]), self.letters.index(move[2])
         piece = str(self.game.piece_at(row * 8 + col))
-        if piece == "p" and row1 == 0 and len(move) == 4:
+        if piece == "p" and row1 == 0 or piece == "P" and row1 == 7:
             self.init_promotion_gui(move)
             flag = False
         if flag:
             self.game.push_san(move)
             self.set_pix_maps()
             self.finish_if_can()
+            self.btn_undo.setEnabled(True)
             if self.bot and not self.game_finished:
                 self.pause_game_for_bot = 1
                 self.btn_undo.setEnabled(False)
-                map_thread = threading.Thread(target=self.set_pix_maps())
-                map_thread.start()
-                bot_thread = threading.Thread(target=self.bot_move)
-                bot_thread.start()
+                self.set_pix_maps()
+                self.bot_move()
 
     def bot_move(self):
-        move = get_ai_move(self.model, self.game)
-        self.game.push(move[0])
+        move, result = get_ai_move(self.model, self.game)
+        print(move, result)
+        self.game.push(move)
         self.finish_if_can()
-        self.set_pix_maps()
         if len(self.game.move_stack) > 2:
             self.btn_undo.setEnabled(True)
         self.change_label_color()
         self.pause_game_for_bot = 0
+        self.set_pix_maps()
 
     def undo(self):
         self.move = str(self.game.pop())
@@ -506,7 +502,6 @@ class NewGame(QWidget, UiFormBasicInterface):
         self.btn_undo.setEnabled(False)
         self.btn_redo.setEnabled(True)
         self.set_pix_maps()
-
 
     def redo(self):
         if self.bot:
@@ -520,6 +515,7 @@ class NewGame(QWidget, UiFormBasicInterface):
         self.set_pix_maps()
 
     def unshow_movements(self):
+        self.unshow = 0
         for move in self.game.legal_moves:
             move = str(move)
             if self.letters.index(move[0]) == self.col and int(move[1]) == self.row + 1:
