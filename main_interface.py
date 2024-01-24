@@ -2,7 +2,7 @@ import sqlite3
 import sys
 import threading
 
-from new_ai import get_ai_move, model
+from ai import get_ai_move, model
 import datetime
 import chess
 import torch
@@ -361,7 +361,7 @@ class NewGame(QWidget, UiFormBasicInterface):
         self.initUI()
         if self.bot:
             self.model = model
-            self.model.load_state_dict(torch.load("last_model.pth"))
+            self.model.load_state_dict(torch.load("models/ten_more_pieces_3.pth"))
             self.model.eval()
 
     def initUI(self):
@@ -478,10 +478,18 @@ class NewGame(QWidget, UiFormBasicInterface):
             if self.bot and not self.game_finished:
                 self.pause_game_for_bot = 1
                 self.btn_undo.setEnabled(False)
-                self.set_pix_maps()
-                self.bot_move()
+                thread = threading.Thread(target=self.set_pix_maps)
+                thread.start()
+                thread = threading.Thread(target=self.bot_move)
+                thread.start()
 
     def bot_move(self):
+        # pieces_count = 0
+        # for i in range(64):
+        #     if self.game.piece_at(i):
+        #         pieces_count += 1
+        # if pieces_count <= 10:
+        #     self.model.state_dict(torch.load("models/ten_less_pieces_3.pth"))
         move, result = get_ai_move(self.model, self.game)
         print(move, result)
         self.game.push(move)
