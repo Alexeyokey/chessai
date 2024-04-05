@@ -61,6 +61,7 @@ def get_ai_move(model, board):
         best_score = 1
     return best_move, best_score
 
+
 def check_mate_single(board):
     board = board.copy()
     legal_moves = list(board.legal_moves)
